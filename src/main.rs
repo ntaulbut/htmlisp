@@ -104,76 +104,67 @@ fn watch(config: &Config) -> Result<(), ProgramError> {
     }
 
     let (transmit, receive) = channel();
-    let mut watcher = watcher(transmit, Duration::from_millis(250)).unwrap(); // Create watcher with 1 second debounce time
+    let mut watcher = watcher(transmit, Duration::from_millis(250)).unwrap();
 
     watcher
         .watch(&config.watch, RecursiveMode::Recursive)
-        .unwrap(); // Watch for file system events in all subfolders of the specified directory
+        .unwrap();
     println!(
-        "\x1b[94;1mInfo:\x1b[0m Watching for changes in {}...",
+        "\x1b[94;1mInfo:\x1b[0m Watching for write events in {}...",
         &config.watch
     );
-
     loop {
         match receive.recv() {
-            Ok(event) => {
-                if let DebouncedEvent::Write(changed_file_path) = event {
-                    // Match if the event is a file write event
-                    let extension = changed_file_path.extension();
-                    if let Some(extension) = extension {
-                        // Match if the file has an extension
-                        if extension == "htmlisp" {
-                            // Construct output path
-                            let watch_dir = PathBuf::from(&config.watch);
-                            let mut output_path = PathBuf::from("output/");
+            Ok(DebouncedEvent::Write(written_file_path)) => {
+                if written_file_path.extension() != Some("htmlisp".as_ref()) {
+                    continue;
+                }
+                // Construct output path
+                let watch_directory = PathBuf::from(&config.watch);
+                let mut output_path = PathBuf::from("output/");
+                let watch_directory_absolute =
+                    watch_directory.canonicalize().map_err(ProgramError::ReadInput)?;
+                let written_file_path_absolute = written_file_path
+                    .canonicalize()
+                    .map_err(ProgramError::ReadInput)?;
+                let written_file_path_relative = written_file_path_absolute
+                    .strip_prefix(watch_directory_absolute)
+                    .expect("Couldn't determine output path");
+                output_path.push(written_file_path_relative);
+                output_path.set_extension("html");
 
-                            let absolute_watch_dir =
-                                watch_dir.canonicalize().map_err(ProgramError::ReadInput)?;
-                            let absolute_changed_file_path = changed_file_path
-                                .canonicalize()
-                                .map_err(ProgramError::ReadInput)?;
-                            let relative_changed_file_path = absolute_changed_file_path
-                                .strip_prefix(absolute_watch_dir)
-                                .expect("Couldn't calculate output path");
+                // Create new config
+                match Config::new(&mut env::args()) {
+                    Ok(mut config) => {
+                        config.input_file =
+                            written_file_path.to_str().unwrap().to_string();
+                        config.output_file = output_path.to_str().unwrap().to_string();
+                        println!(
+                            "\x1b[94;1mInfo:\x1b[0m Compiling due to write event..."
+                        );
 
-                            output_path.push(relative_changed_file_path); // (Relative means relative to the watch directory)
-                            output_path.set_extension("html");
-
-                            // Create new config
-                            match Config::new(&mut env::args()) {
-                                Ok(config) => {
-                                    let mut config = config; // Make value from match mutable
-                                    config.input_file =
-                                        changed_file_path.to_str().unwrap().to_string();
-                                    config.output_file = output_path.to_str().unwrap().to_string();
-                                    println!(
-                                        "\x1b[94;1mInfo:\x1b[0m Re-compiling due to changes..."
-                                    );
-
-                                    // Parse changed file with new config
-                                    match read_write(&config) {
-                                        Ok(()) => println!(
-                                            "\x1b[32;1mSuccess:\x1b[0m {} -> {}",
-                                            relative_changed_file_path.to_string_lossy(),
-                                            &config.output_file
-                                        ),
-                                        // Handle error here instead of propagating it so that the loop keeps running
-                                        Err(err) => eprintln!(
-                                            "\x1b[31;1mError:\x1b[0m {}: {}",
-                                            err,
-                                            relative_changed_file_path.to_string_lossy()
-                                        ),
-                                    }
-                                }
-                                Err(err) => {
-                                    eprintln!("\x1b[31;1mError:\x1b[0m {}", err);
-                                    process::exit(1);
-                                }
-                            }
+                        // Parse changed file with new config
+                        match read_write(&config) {
+                            Ok(()) => println!(
+                                "\x1b[32;1mSuccess:\x1b[0m {} -> {}",
+                                written_file_path_relative.to_string_lossy(),
+                                &config.output_file
+                            ),
+                            // Handle error here instead of propagating it so that the loop keeps running
+                            Err(err) => eprintln!(
+                                "\x1b[31;1mError:\x1b[0m {}: {}",
+                                err,
+                                written_file_path_relative.to_string_lossy()
+                            ),
                         }
+                    }
+                    Err(err) => {
+                        eprintln!("\x1b[31;1mError:\x1b[0m {}", err);
+                        process::exit(1);
                     }
                 }
             }
+            Ok(_) => {}
             Err(err) => {
                 eprintln!("\x1b[31;1mError:\x1b[0m Watch error: {:?}", err);
                 process::exit(1);
